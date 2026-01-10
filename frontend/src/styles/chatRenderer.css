@@ -1,0 +1,216 @@
+/* Professional typography for intelligent chat renderer */
+
+/* Section Headings */
+.section-title {
+  font-weight: bold;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.25rem;
+  letter-spacing: -0.5px;
+}
+
+/* Paragraphs */
+.paragraph {
+  font-weight: 400;
+  line-height: 1.75;
+  margin-bottom: 1rem;
+  word-break: break-word;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Bullet Lists */
+.bullet-list {
+  margin-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-bottom: 1.5rem;
+  margin-top: 0.75rem;
+}
+
+.bullet-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  line-height: 1.6;
+}
+
+/* Table Styling */
+.table-container {
+  overflow-x: auto;
+  margin: 1.5rem 0;
+  border-radius: 0.5rem;
+}
+
+.table-container table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.table-container thead {
+  font-weight: 600;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.table-container th {
+  padding: 0.875rem 1rem;
+  border-bottom: 2px solid;
+  font-weight: 600;
+  letter-spacing: 0.25px;
+}
+
+.table-container td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.table-container tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Horizontal Rules */
+.horizontal-rule {
+  margin: 2rem 0;
+  border: none;
+  border-top: 1px solid;
+  height: 0;
+  opacity: 0.6;
+}
+
+/* Citations */
+.citation-ref {
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  transition: all 0.2s ease;
+  display: inline-block;
+  margin: 0 0.125rem;
+}
+
+.citation-ref:hover {
+  background-color: rgb(191, 219, 254);
+  transform: scale(1.1);
+}
+
+.dark .citation-ref:hover {
+  background-color: rgb(30, 58, 138);
+}
+
+/* Code Blocks */
+.code-block {
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid;
+  margin: 1.5rem 0;
+}
+
+.code-block pre {
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  font-family: "Monaco", "Courier New", monospace;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* Dark mode overrides */
+.dark .section-title {
+  color: rgb(245, 245, 245);
+}
+
+.dark .paragraph {
+  color: rgb(209, 213, 219);
+}
+
+.dark .bullet-list {
+  color: rgb(209, 213, 219);
+}
+
+.dark .table-container th {
+  border-bottom-color: rgb(55, 65, 81);
+  color: rgb(229, 231, 235);
+  background-color: rgb(55, 65, 81);
+}
+
+.dark .table-container td {
+  border-bottom-color: rgb(55, 65, 81);
+  color: rgb(209, 213, 219);
+}
+
+.dark .table-container tbody tr:nth-child(odd) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Light mode table */
+.table-container th {
+  background-color: rgb(243, 244, 246);
+  border-bottom-color: rgb(209, 213, 219);
+  color: rgb(31, 41, 55);
+}
+
+.table-container td {
+  border-bottom-color: rgb(229, 231, 235);
+  color: rgb(55, 65, 81);
+}
+
+.table-container tbody tr:nth-child(odd) {
+  background-color: rgba(249, 250, 251, 0.5);
+}
+
+/* Semantic block spacing */
+.chat-message-container > * + * {
+  margin-top: 1rem;
+}
+
+/* Professional list styling */
+.professional-list {
+  margin: 1rem 0;
+}
+
+/* Emoji and special characters */
+.emoji {
+  display: inline-block;
+  margin: 0 0.25rem;
+}
+
+/* Better spacing between sections */
+h1, h2, h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+h1:first-child, h2:first-child, h3:first-child {
+  margin-top: 0;
+}
+
+/* Preserve newlines and spacing in paragraphs */
+.preserve-spacing {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.professional-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.professional-list-item::before {
+  flex-shrink: 0;
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 50%;
+  background-color: rgb(37, 99, 235);
+  margin-top: 0.5rem;
+  content: '';
+}

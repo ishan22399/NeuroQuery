@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Chat from './pages/Chat';
 import { Toaster } from 'sonner';
 import './App.css';
+import './styles/chatRenderer.css';
 
 function App() {
   return (
