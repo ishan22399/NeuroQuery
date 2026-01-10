@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Loader2, Send, Plus, Trash2, Menu, Copy, Check, Upload, X } from 'lucide-react';
+import { Loader2, Send, Plus, Trash2, Menu, Copy, Check, Upload, X, Moon, Sun } from 'lucide-react';
 import axios from 'axios';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import ChatMessageRenderer from '../components/ChatMessageRenderer';
 
 const Chat = () => {
   const [chats, setChats] = useState([]);
@@ -17,14 +16,27 @@ const Chat = () => {
   const [showSidebar, setShowSidebar] = useState(true);
   const [copiedId, setCopiedId] = useState(null);
   const [citationModal, setCitationModal] = useState(null);
-  const [currentMessages, setCurrentMessages] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState({});
   const [isDragging, setIsDragging] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('chat-dark-mode');
+    return saved ? JSON.parse(saved) : false;
+  });
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
   const API_BASE = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+
+  // Save dark mode preference
+  useEffect(() => {
+    localStorage.setItem('chat-dark-mode', JSON.stringify(isDarkMode));
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
 
   // Load documents
   useEffect(() => {
@@ -85,7 +97,6 @@ const Chat = () => {
       const response = await axios.get(`${API_BASE}/api/chats/${chatId}`);
       setCurrentChat(response.data);
       setMessages(response.data.messages || []);
-      // Load the documents that were selected for THIS specific chat
       setSelectedDocs(response.data.document_ids || []);
     } catch (error) {
       console.error('Error loading chat:', error);
@@ -174,49 +185,7 @@ const Chat = () => {
   const handleFileUpload = async (event) => {
     const files = Array.from(event.target.files);
     if (files.length === 0) return;
-
-    setUploading(true);
-
-    for (const file of files) {
-      setUploadingFiles(prev => ({ ...prev, [file.name]: 0 }));
-      
-      const formData = new FormData();
-      formData.append('file', file);
-
-      try {
-        const response = await axios.post(`${API_BASE}/api/documents/upload`, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-          onUploadProgress: (progressEvent) => {
-            const percentComplete = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            setUploadingFiles(prev => ({ ...prev, [file.name]: percentComplete }));
-          },
-        });
-
-        // Reload documents list
-        const docsResponse = await axios.get(`${API_BASE}/api/documents`);
-        setDocuments(docsResponse.data);
-        
-        // Clear upload progress
-        setUploadingFiles(prev => {
-          const newFiles = { ...prev };
-          delete newFiles[file.name];
-          return newFiles;
-        });
-      } catch (error) {
-        console.error('Error uploading file:', error);
-        alert(`Failed to upload ${file.name}`);
-        setUploadingFiles(prev => {
-          const newFiles = { ...prev };
-          delete newFiles[file.name];
-          return newFiles;
-        });
-      }
-    }
-
-    setUploading(false);
-    event.target.value = '';
+    uploadFiles(files);
   };
 
   const removeDocument = async (docId) => {
@@ -271,14 +240,11 @@ const Chat = () => {
           },
         });
 
-        // Reload documents list
         const docsResponse = await axios.get(`${API_BASE}/api/documents`);
         setDocuments(docsResponse.data);
         
-        // Auto-select the newly uploaded document
         setSelectedDocs(prev => [...prev, response.data.id]);
         
-        // Clear upload progress
         setUploadingFiles(prev => {
           const newFiles = { ...prev };
           delete newFiles[file.name];
@@ -298,63 +264,11 @@ const Chat = () => {
     setUploading(false);
   };
 
-  const markdownComponents = {
-    h1: ({ children }) => <h1 className="text-3xl font-bold text-slate-900 mt-6 mb-4">{children}</h1>,
-    h2: ({ children }) => <h2 className="text-2xl font-bold text-slate-900 mt-5 mb-3">{children}</h2>,
-    h3: ({ children }) => <h3 className="text-xl font-bold text-slate-800 mt-4 mb-2">{children}</h3>,
-    p: ({ children }) => <p className="text-base text-slate-700 mb-4 leading-relaxed">{children}</p>,
-    ul: ({ children }) => <ul className="list-disc list-inside mb-4 space-y-2 text-slate-700">{children}</ul>,
-    ol: ({ children }) => <ol className="list-decimal list-inside mb-4 space-y-2 text-slate-700">{children}</ol>,
-    li: ({ children }) => <li className="text-base text-slate-700 ml-2">{children}</li>,
-    strong: ({ children }) => <strong className="font-bold text-slate-900">{children}</strong>,
-    em: ({ children }) => <em className="italic text-slate-800">{children}</em>,
-    code: ({ children, inline }) => 
-      inline ? (
-        <code className="bg-slate-100 text-red-600 px-2 py-1 rounded text-sm font-mono">{children}</code>
-      ) : (
-        <code className="bg-slate-900 text-slate-50 p-4 rounded-lg block mb-4 text-sm font-mono overflow-x-auto">{children}</code>
-      ),
-    table: ({ children }) => (
-      <div className="overflow-x-auto mb-4">
-        <table className="border-collapse border border-slate-300 w-full">{children}</table>
-      </div>
-    ),
-    thead: ({ children }) => <thead className="bg-slate-100">{children}</thead>,
-    tbody: ({ children }) => <tbody>{children}</tbody>,
-    tr: ({ children }) => <tr className="border border-slate-300">{children}</tr>,
-    th: ({ children }) => <th className="border border-slate-300 px-4 py-2 text-left font-bold text-slate-900">{children}</th>,
-    td: ({ children }) => <td className="border border-slate-300 px-4 py-2 text-slate-700">{children}</td>,
-    blockquote: ({ children }) => (
-      <blockquote className="border-l-4 border-blue-500 pl-4 italic text-slate-600 my-4">{children}</blockquote>
-    ),
-    a: ({ children, href }) => {
-      // Check if this is a citation link [1], [2], etc
-      const citationMatch = children?.toString()?.match(/^\[(\d+)\]$/);
-      if (citationMatch) {
-        const citationIdx = parseInt(citationMatch[1]) - 1;
-        return (
-          <button
-            onClick={() => setCitationModal(citationIdx)}
-            className="inline-flex items-center justify-center w-6 h-6 text-xs font-bold text-blue-600 bg-blue-100 rounded-full hover:bg-blue-200 mx-1 align-super cursor-pointer transition-colors"
-            title={`View source ${citationMatch[1]}`}
-          >
-            {citationMatch[1]}
-          </button>
-        );
-      }
-      return (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-          {children}
-        </a>
-      );
-    },
-  };
-
   return (
-    <div className="flex h-screen bg-white">
+    <div className={`flex h-screen ${isDarkMode ? 'dark bg-gray-950' : 'bg-white'}`}>
       {/* Sidebar */}
-      <div className={`${showSidebar ? 'w-64' : 'w-0'} bg-gradient-to-b from-slate-900 to-slate-800 text-white transition-all duration-300 overflow-hidden flex flex-col shadow-lg`}>
-        <div className="p-4 border-b border-slate-700">
+      <div className={`${showSidebar ? 'w-64' : 'w-0'} ${isDarkMode ? 'bg-gradient-to-b from-slate-950 to-slate-900' : 'bg-gradient-to-b from-slate-900 to-slate-800'} text-white transition-all duration-300 overflow-hidden flex flex-col shadow-lg`}>
+        <div className={`p-4 border-b ${isDarkMode ? 'border-slate-700' : 'border-slate-700'}`}>
           <Button
             onClick={handleNewChat}
             className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-medium rounded-lg"
@@ -375,14 +289,13 @@ const Chat = () => {
         </div>
 
         {/* Documents Upload & Selection */}
-        <div className="p-4 border-b border-slate-700">
+        <div className={`p-4 border-b ${isDarkMode ? 'border-slate-700' : 'border-slate-700'}`}>
           <h3 className="text-xs uppercase font-semibold text-slate-400 mb-3 tracking-wider">Documents</h3>
           
-          {/* Upload Area */}
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            className="w-full p-3 border-2 border-dashed border-slate-600 rounded-lg hover:border-blue-500 hover:bg-slate-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 text-sm text-slate-300 mb-3"
+            className={`w-full p-3 border-2 border-dashed rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2 text-sm mb-3 ${isDarkMode ? 'border-slate-600 hover:border-blue-500 hover:bg-slate-700 text-slate-300' : 'border-slate-600 hover:border-blue-500 hover:bg-slate-700 text-slate-300'}`}
           >
             <Upload className="w-4 h-4" />
             {uploading ? 'Uploading...' : 'Upload Documents'}
@@ -396,32 +309,24 @@ const Chat = () => {
             className="hidden"
           />
 
-          {/* Upload Progress */}
           {Object.keys(uploadingFiles).length > 0 && (
             <div className="space-y-2 mb-3">
               {Object.entries(uploadingFiles).map(([filename, progress]) => (
                 <div key={filename} className="text-xs">
                   <p className="text-slate-400 truncate mb-1">{filename}</p>
                   <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-blue-600 h-full transition-all duration-300"
-                      style={{ width: `${progress}%` }}
-                    />
+                    <div className="bg-blue-600 h-full transition-all duration-300" style={{ width: `${progress}%` }} />
                   </div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Documents List */}
           {documents.length > 0 && (
             <div className="space-y-2 max-h-48 overflow-y-auto">
               <p className="text-xs text-slate-500 mb-2">{documents.length} document{documents.length !== 1 ? 's' : ''} uploaded</p>
               {documents.map(doc => (
-                <div
-                  key={doc.id}
-                  className="flex items-start gap-2 p-2 rounded hover:bg-slate-700 transition-colors group"
-                >
+                <div key={doc.id} className="flex items-start gap-2 p-2 rounded hover:bg-slate-700 transition-colors group">
                   <input
                     type="checkbox"
                     checked={selectedDocs.includes(doc.id)}
@@ -485,32 +390,36 @@ const Chat = () => {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-gradient-to-br from-white via-blue-50 to-white">
+      <div className={`flex-1 flex flex-col ${isDarkMode ? 'bg-gray-950' : 'bg-gradient-to-br from-white via-blue-50 to-white'}`}>
         {/* Header */}
-        <div className="border-b border-slate-200 px-6 py-4 flex items-center justify-between bg-white shadow-sm">
+        <div className={`border-b px-6 py-4 flex items-center justify-between shadow-sm ${isDarkMode ? 'border-gray-800 bg-gray-900' : 'border-slate-200 bg-white'}`}>
           <div className="flex items-center gap-4 flex-1">
             <button
               onClick={() => setShowSidebar(!showSidebar)}
-              className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+              className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-slate-100'}`}
             >
-              <Menu className="w-5 h-5 text-slate-600" />
+              <Menu className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`} />
             </button>
             <div className="flex-1">
-              <h1 className="text-2xl font-bold text-slate-900">
+              <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-gray-50' : 'text-slate-900'}`}>
                 {currentChat?.title || 'NeuroQuery'}
               </h1>
               <div className="flex items-center gap-4 mt-1">
-                <p className="text-sm text-slate-500">Document-based AI Assistant</p>
+                <p className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>Document-based AI Assistant</p>
                 {currentChat && selectedDocs.length > 0 && (
-                  <div className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                    Using {selectedDocs.length} document{selectedDocs.length !== 1 ? 's' : ''}: {selectedDocs.map(docId => {
-                      const doc = documents.find(d => d.id === docId);
-                      return doc?.filename || docId;
-                    }).join(', ')}
+                  <div className={`text-xs px-2 py-1 rounded ${isDarkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 text-blue-800'}`}>
+                    Using {selectedDocs.length} doc{selectedDocs.length !== 1 ? 's' : ''}
                   </div>
                 )}
               </div>
             </div>
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'bg-gray-800 text-yellow-400 hover:bg-gray-700' : 'bg-slate-100 text-amber-600 hover:bg-slate-200'}`}
+              title={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
           </div>
         </div>
 
@@ -520,11 +429,11 @@ const Chat = () => {
             <div className="h-full flex flex-col items-center justify-center text-center px-6">
               <div className="max-w-md">
                 <div className="mb-6">
-                  <div className="w-16 h-16 bg-gradient-to-br from-blue-100 to-blue-50 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg ${isDarkMode ? 'bg-gray-800' : 'bg-gradient-to-br from-blue-100 to-blue-50'}`}>
                     <span className="text-3xl">💬</span>
                   </div>
-                  <h2 className="text-3xl font-bold text-slate-900 mb-3">Welcome to NeuroQuery</h2>
-                  <p className="text-slate-600 text-lg leading-relaxed">
+                  <h2 className={`text-3xl font-bold mb-3 ${isDarkMode ? 'text-gray-100' : 'text-slate-900'}`}>Welcome to NeuroQuery</h2>
+                  <p className={`text-lg leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
                     Upload documents and start chatting to explore your content with AI-powered insights.
                   </p>
                 </div>
@@ -540,29 +449,33 @@ const Chat = () => {
           ) : (
             <>
               {messages.map((msg) => (
-                <div key={msg.id} className={`px-6 py-6 ${msg.role === 'user' ? 'bg-white' : 'bg-slate-50'}`}>
+                <div key={msg.id} className={`px-6 py-6 ${msg.role === 'user' ? (isDarkMode ? 'bg-gray-900' : 'bg-white') : (isDarkMode ? 'bg-gray-800' : 'bg-slate-50')}`}>
                   <div className={`max-w-4xl ${msg.role === 'user' ? 'ml-auto mr-0' : 'ml-0 mr-auto'}`}>
                     {msg.role === 'user' ? (
                       <div className="flex justify-end">
-                        <div className="bg-blue-600 text-white rounded-xl rounded-tr-none px-5 py-3 shadow-md max-w-2xl">
+                        <div className={`text-white rounded-xl rounded-tr-none px-5 py-3 shadow-md max-w-2xl ${isDarkMode ? 'bg-blue-700' : 'bg-blue-600'}`}>
                           <p className="text-base leading-relaxed">{msg.content}</p>
                         </div>
                       </div>
                     ) : (
-                      <div className="prose prose-sm max-w-none">
-                        <ReactMarkdown 
-                          components={markdownComponents}
-                          remarkPlugins={[remarkGfm]}
-                        >
-                          {msg.content}
-                        </ReactMarkdown>
+                      <div>
+                        <ChatMessageRenderer
+                          message={msg.content}
+                          citations={msg.citations}
+                          isDark={isDarkMode}
+                          onCitationClick={(num) => {
+                            const citation = msg.citations?.[num - 1];
+                            if (citation) {
+                              setCitationModal({ idx: num - 1, cite: citation });
+                            }
+                          }}
+                        />
 
                         {msg.citations && msg.citations.length > 0 && (
-                          <div className="mt-6 pt-4 border-t border-slate-200">
-                            <p className="text-sm font-semibold text-slate-700 mb-3">Sources</p>
+                          <div className={`mt-6 pt-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-slate-200'}`}>
+                            <p className={`text-sm font-semibold mb-3 ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>Sources</p>
                             <div className="space-y-3">
                               {msg.citations.map((cite, idx) => {
-                                // Extract URLs from citation text
                                 const urlRegex = /https?:\/\/[^\s\n]+/g;
                                 const urls = cite.text.match(urlRegex) || [];
                                 
@@ -570,22 +483,21 @@ const Chat = () => {
                                   <div
                                     key={idx}
                                     onClick={() => setCitationModal({ idx, cite })}
-                                    className="bg-gradient-to-r from-white to-blue-50 border border-slate-200 rounded-lg p-4 hover:border-blue-400 hover:shadow-md transition-all duration-200 cursor-pointer group"
+                                    className={`rounded-lg p-4 hover:shadow-md transition-all duration-200 cursor-pointer group border ${isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-blue-500' : 'bg-gradient-to-r from-white to-blue-50 border-slate-200 hover:border-blue-400'}`}
                                   >
                                     <div className="flex items-start justify-between">
                                       <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2 mb-2">
-                                          <span className="inline-flex items-center justify-center w-6 h-6 text-xs font-bold text-white bg-blue-600 rounded-full">
+                                          <span className="inline-flex items-center justify-center w-6 h-6 text-xs font-bold text-white rounded-full bg-blue-600">
                                             {idx + 1}
                                           </span>
-                                          <p className="font-semibold text-slate-900">{cite.document_name}</p>
-                                          <span className="text-xs text-slate-500">({(cite.similarity * 100).toFixed(0)}% relevant)</span>
+                                          <p className={`font-semibold ${isDarkMode ? 'text-gray-100' : 'text-slate-900'}`}>{cite.document_name}</p>
+                                          <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`}>({(cite.similarity * 100).toFixed(0)}%)</span>
                                         </div>
-                                        <p className="text-sm text-slate-700 leading-relaxed line-clamp-2">
+                                        <p className={`text-sm leading-relaxed line-clamp-2 ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
                                           "{cite.text}"
                                         </p>
                                         
-                                        {/* Display extracted URLs */}
                                         {urls.length > 0 && (
                                           <div className="mt-2 flex flex-wrap gap-2">
                                             {urls.map((url, uidx) => (
@@ -595,7 +507,7 @@ const Chat = () => {
                                                 target="_blank"
                                                 rel="noopener noreferrer"
                                                 onClick={(e) => e.stopPropagation()}
-                                                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors inline-flex items-center gap-1"
+                                                className={`text-xs px-2 py-1 rounded inline-flex items-center gap-1 transition-colors ${isDarkMode ? 'bg-blue-900 text-blue-200 hover:bg-blue-800' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
                                               >
                                                 🔗 {url.substring(0, 40)}...
                                               </a>
@@ -605,22 +517,22 @@ const Chat = () => {
                                       </div>
                                       <button
                                         onClick={(e) => {
-                                        e.stopPropagation();
-                                        copyToClipboard(cite.text, `cite-${idx}`);
-                                      }}
-                                      className="ml-2 p-2 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-slate-200 rounded"
-                                      title="Copy citation"
-                                    >
-                                      {copiedId === `cite-${idx}` ? (
-                                        <Check className="w-4 h-4 text-green-600" />
-                                      ) : (
-                                        <Copy className="w-4 h-4 text-slate-500" />
-                                      )}
-                                    </button>
+                                          e.stopPropagation();
+                                          copyToClipboard(cite.text, `cite-${idx}`);
+                                        }}
+                                        className={`ml-2 p-2 opacity-0 group-hover:opacity-100 transition-opacity rounded ${isDarkMode ? 'hover:bg-gray-600' : 'hover:bg-slate-200'}`}
+                                        title="Copy citation"
+                                      >
+                                        {copiedId === `cite-${idx}` ? (
+                                          <Check className="w-4 h-4 text-green-600" />
+                                        ) : (
+                                          <Copy className={`w-4 h-4 ${isDarkMode ? 'text-gray-400' : 'text-slate-500'}`} />
+                                        )}
+                                      </button>
+                                    </div>
                                   </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -631,10 +543,10 @@ const Chat = () => {
               ))}
               
               {loading && (
-                <div className="px-6 py-4 bg-slate-50">
+                <div className={`px-6 py-4 ${isDarkMode ? 'bg-gray-800' : 'bg-slate-50'}`}>
                   <div className="max-w-3xl mx-auto flex items-center gap-2">
-                    <Loader2 className="w-5 h-5 animate-spin text-slate-600" />
-                    <span className="text-slate-600">Thinking...</span>
+                    <Loader2 className={`w-5 h-5 animate-spin ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`} />
+                    <span className={isDarkMode ? 'text-gray-400' : 'text-slate-600'}>Thinking...</span>
                   </div>
                 </div>
               )}
@@ -647,37 +559,33 @@ const Chat = () => {
         {/* Input Area */}
         {currentChat && (
           <div 
-            className={`border-t border-slate-200 bg-white px-6 py-5 shadow-lg transition-colors ${
-              isDragging ? 'bg-blue-50 border-blue-400' : ''
-            }`}
+            className={isDarkMode 
+              ? `border-t px-6 py-5 shadow-lg transition-colors bg-gray-900 border-gray-800 ${isDragging ? 'bg-gray-800 border-blue-400' : ''}` 
+              : `border-t px-6 py-5 shadow-lg transition-colors bg-white border-slate-200 ${isDragging ? 'bg-blue-50 border-blue-400' : ''}`
+            }
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            {/* Upload Progress */}
             {Object.keys(uploadingFiles).length > 0 && (
               <div className="mb-4 space-y-2 max-w-4xl mx-auto">
                 {Object.entries(uploadingFiles).map(([filename, progress]) => (
                   <div key={filename} className="text-sm">
                     <div className="flex justify-between items-center mb-1">
-                      <p className="text-slate-600 truncate">{filename}</p>
-                      <p className="text-xs text-slate-500">{progress}%</p>
+                      <p className={isDarkMode ? 'text-gray-400' : 'text-slate-600'} >{filename}</p>
+                      <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>{progress}%</p>
                     </div>
-                    <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                      <div
-                        className="bg-blue-600 h-full transition-all duration-300"
-                        style={{ width: `${progress}%` }}
-                      />
+                    <div className={`w-full rounded-full h-2 overflow-hidden ${isDarkMode ? 'bg-gray-700' : 'bg-slate-200'}`}>
+                      <div className="bg-blue-600 h-full transition-all duration-300" style={{ width: `${progress}%` }} />
                     </div>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Upload Hint */}
             {isDragging && (
-              <div className="mb-4 p-4 bg-blue-100 border-2 border-blue-400 rounded-lg text-center">
-                <p className="text-blue-800 font-medium">Drop files to upload</p>
+              <div className={`mb-4 p-4 rounded-lg text-center border-2 border-blue-400 ${isDarkMode ? 'bg-blue-900 text-blue-200' : 'bg-blue-100 border-blue-400 text-blue-800'}`}>
+                <p className="font-medium">Drop files to upload</p>
               </div>
             )}
 
@@ -687,10 +595,10 @@ const Chat = () => {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading || loading}
-                  className="p-3 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center"
+                  className={`p-3 rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-slate-100'}`}
                   title="Upload documents"
                 >
-                  <Upload className="w-5 h-5 text-slate-600" />
+                  <Upload className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`} />
                 </button>
                 <input
                   ref={fileInputRef}
@@ -706,7 +614,7 @@ const Chat = () => {
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask anything about your documents..."
                     disabled={loading || uploading}
-                    className="flex-1 border-slate-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 text-base"
+                    className={`flex-1 rounded-lg focus:ring-2 focus:ring-blue-200 text-base ${isDarkMode ? 'bg-gray-800 border-gray-700 text-gray-100 placeholder-gray-500 focus:border-blue-500' : 'border-slate-300 focus:border-blue-500'}`}
                   />
                 </div>
                 <Button
@@ -728,7 +636,7 @@ const Chat = () => {
         {/* Citation Modal */}
         {citationModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-96 overflow-y-auto">
+            <div className={`rounded-lg shadow-xl max-w-2xl w-full max-h-96 overflow-y-auto ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`}>
               <div className="sticky top-0 bg-gradient-to-r from-blue-600 to-blue-700 px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span className="inline-flex items-center justify-center w-8 h-8 text-sm font-bold text-white bg-blue-800 rounded-full">
@@ -746,8 +654,8 @@ const Chat = () => {
               <div className="px-6 py-4">
                 <div className="mb-2 flex justify-between items-start">
                   <div>
-                    <p className="text-xs text-slate-500 mb-1">Relevance Score</p>
-                    <p className="text-lg font-semibold text-slate-900">
+                    <p className={`text-xs mb-1 ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>Relevance Score</p>
+                    <p className={`text-lg font-semibold ${isDarkMode ? 'text-gray-100' : 'text-slate-900'}`}>
                       {(citationModal.cite.similarity * 100).toFixed(1)}%
                     </p>
                   </div>
@@ -771,8 +679,8 @@ const Chat = () => {
                     )}
                   </button>
                 </div>
-                <div className="border-t border-slate-200 pt-4">
-                  <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">
+                <div className={`border-t pt-4 ${isDarkMode ? 'border-gray-700' : 'border-slate-200'}`}>
+                  <p className={`leading-relaxed whitespace-pre-wrap ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
                     {citationModal.cite.text}
                   </p>
                 </div>

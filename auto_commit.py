@@ -116,8 +116,8 @@ class GitAutoCommitter:
         
         # Configure git user
         print("👤 Configuring git user...")
-        self.run_command(['git', 'config', 'user.name', 'NeuroQuery Bot'])
-        self.run_command(['git', 'config', 'user.email', 'bot@neuroquery.dev'])
+        self.run_command(['git', 'config', 'user.name', 'Ishan'])
+        self.run_command(['git', 'config', 'user.email', 'ishanshivankar14@gmail.com'])
         
         return True
     

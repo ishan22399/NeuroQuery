@@ -48,11 +48,12 @@ api_router = APIRouter(prefix="/api")
 
 # FAISS index (in-memory)
 faiss_index = None
-chunk_metadata = []
+chunk_metadata = {}  # Changed from list to dict for O(1) lookup
+metadata_index_map = []  # Maps FAISS index position to chunk_id
 
 async def rebuild_faiss_index():
     """Rebuild FAISS index from MongoDB on startup"""
-    global faiss_index, chunk_metadata
+    global faiss_index, chunk_metadata, metadata_index_map
     
     try:
         # Load all chunks from MongoDB
@@ -60,23 +61,20 @@ async def rebuild_faiss_index():
         
         if not chunks:
             logging.info("No chunks found in MongoDB, FAISS index empty")
+            faiss_index = None
             return
         
         # Extract embeddings and metadata
         embeddings_list = []
+        chunk_metadata = {}  # Reset to empty dict
+        metadata_index_map = []
+        
         for chunk in chunks:
             if 'embedding' in chunk and chunk['embedding']:
+                chunk_id = chunk.get('id')
                 embeddings_list.append({
                     'embedding': np.array(chunk['embedding']),
-                    'chunk_id': chunk.get('id'),
-                    'document_id': chunk.get('document_id'),
-                    'document_name': chunk.get('document_name', ''),
-                    'chunk_index': chunk.get('chunk_index', 0),
-                    'text': chunk.get('text', '')
-                })
-                embeddings_list.append({
-                    'embedding': np.array(chunk['embedding']),
-                    'chunk_id': chunk.get('id'),
+                    'chunk_id': chunk_id,
                     'document_id': chunk.get('document_id'),
                     'document_name': chunk.get('document_name', ''),
                     'chunk_index': chunk.get('chunk_index', 0),
@@ -85,29 +83,32 @@ async def rebuild_faiss_index():
         
         if not embeddings_list:
             logging.info("No embeddings found in MongoDB")
+            faiss_index = None
             return
         
-        # Initialize FAISS index
-        embeddings_array = np.array([e['embedding'] for e in embeddings_list])
+        # Initialize FAISS index with FlatL2 (simple, reliable, no training needed)
+        embeddings_array = np.array([e['embedding'] for e in embeddings_list]).astype('float32')
         dimension = embeddings_array.shape[1]
+        
+        # Use simple FlatL2 index - reliable and works with any number of documents
         faiss_index = faiss.IndexFlatL2(dimension)
         faiss_index.add(embeddings_array)
         
-        # Rebuild metadata
-        chunk_metadata = [
-            {
-                'chunk_id': e['chunk_id'],
+        # Rebuild metadata as dictionary for O(1) lookup
+        for idx, e in enumerate(embeddings_list):
+            chunk_id = e['chunk_id']
+            chunk_metadata[chunk_id] = {
                 'document_id': e['document_id'],
                 'document_name': e['document_name'],
                 'chunk_index': e['chunk_index'],
                 'text': e['text']
             }
-            for e in embeddings_list
-        ]
+            metadata_index_map.append(chunk_id)
         
         logging.info(f"FAISS index rebuilt from MongoDB: {len(chunk_metadata)} chunks loaded")
     except Exception as e:
         logging.error(f"Error rebuilding FAISS index: {e}")
+        faiss_index = None
 
 # Models
 class Document(BaseModel):
@@ -279,7 +280,7 @@ def extract_text_from_image(file_bytes: bytes) -> str:
 
 async def process_document(file: UploadFile, document_id: str):
     """Process uploaded document: extract text, chunk, embed"""
-    global faiss_index, chunk_metadata
+    global faiss_index, chunk_metadata, metadata_index_map
     
     file_bytes = await file.read()
     file_type = file.filename.split('.')[-1].lower()
@@ -310,23 +311,18 @@ async def process_document(file: UploadFile, document_id: str):
     
     # Chunk the text
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100,
+        chunk_size=1000,  # Optimized size
+        chunk_overlap=150,
         separators=["\n\n", "\n", ". ", " ", ""]
     )
     chunks = text_splitter.split_text(text)
     
-    # Generate embeddings
-    embeddings = embedding_model.encode(chunks, convert_to_numpy=True)
+    # Generate embeddings in batch
+    embeddings = embedding_model.encode(chunks, convert_to_numpy=True, batch_size=32)
+    embeddings = embeddings.astype('float32')
     
-    # Update FAISS index
-    if faiss_index is None:
-        dimension = embeddings.shape[1]
-        faiss_index = faiss.IndexFlatL2(dimension)
-    
-    faiss_index.add(embeddings)
-    
-    # Store chunks in database
+    # Batch insert chunks into database
+    chunk_docs = []
     for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
         chunk_doc = DocumentChunk(
             document_id=document_id,
@@ -336,16 +332,11 @@ async def process_document(file: UploadFile, document_id: str):
         )
         chunk_dict = chunk_doc.model_dump()
         chunk_dict['upload_date'] = datetime.now(timezone.utc).isoformat()
-        await db.document_chunks.insert_one(chunk_dict)
-        
-        # Add to metadata
-        chunk_metadata.append({
-            'chunk_id': chunk_doc.id,
-            'document_id': document_id,
-            'document_name': file.filename,
-            'chunk_index': idx,
-            'text': chunk
-        })
+        chunk_docs.append(chunk_dict)
+    
+    # Batch insert all chunks
+    if chunk_docs:
+        await db.document_chunks.insert_many(chunk_docs)
     
     # Update document
     await db.documents.update_one(
@@ -353,34 +344,46 @@ async def process_document(file: UploadFile, document_id: str):
         {'$set': {'total_chunks': len(chunks), 'processed': True}}
     )
     
+    # Rebuild FAISS index to ensure consistency
+    await rebuild_faiss_index()
+    
     return len(chunks)
 
 async def retrieve_relevant_chunks(query: str, top_k: int = 5, document_ids: Optional[List[str]] = None) -> List[Dict]:
     """Retrieve relevant chunks using FAISS"""
-    global faiss_index, chunk_metadata
+    global faiss_index, chunk_metadata, metadata_index_map
     
     if faiss_index is None or len(chunk_metadata) == 0:
         return []
     
     # Embed query
-    query_embedding = embedding_model.encode([query], convert_to_numpy=True)
+    query_embedding = embedding_model.encode([query], convert_to_numpy=True).astype('float32')
     
-    # Search FAISS
-    k = min(top_k * 2, len(chunk_metadata))  # Get more for filtering
+    # Search FAISS with adjusted k
+    k = min(top_k * 3, len(chunk_metadata))  # Get more for filtering
     distances, indices = faiss_index.search(query_embedding, k)
     
-    # Get chunks with metadata
+    # Get chunks with metadata - use dict lookup for O(1) performance
     results = []
     for idx, distance in zip(indices[0], distances[0]):
-        if idx < len(chunk_metadata):
-            meta = chunk_metadata[idx]
+        if idx < len(metadata_index_map):
+            chunk_id = metadata_index_map[idx]
+            meta = chunk_metadata.get(chunk_id)
+            
+            if not meta:
+                continue
+            
             # Filter by document_ids if provided
             if document_ids and meta['document_id'] not in document_ids:
                 continue
             
+            # Skip if distance is too high (poor match)
+            if distance > 2.0:
+                continue
+            
             similarity = 1.0 / (1.0 + distance)  # Convert distance to similarity
             results.append({
-                'chunk_id': meta['chunk_id'],
+                'chunk_id': chunk_id,
                 'document_id': meta['document_id'],
                 'document_name': meta['document_name'],
                 'text': meta['text'],
@@ -413,9 +416,12 @@ async def generate_answer_with_llm(query: str, context_chunks: List[Dict], mode:
     
     # Build context from chunks
     context = "\n\n".join([
-        f"[Document: {chunk['document_name']}]\n{chunk['text']}"
-        for chunk in context_chunks
+        f"[Source {idx + 1} - {chunk['document_name']}]\n{chunk['text']}"
+        for idx, chunk in enumerate(context_chunks)
     ])
+    
+    # Calculate number of available sources
+    num_sources = len(context_chunks)
     
     # Create mode-specific prompts
     mode_instructions = {
@@ -444,12 +450,15 @@ RULES:
    - Keep structure clean and readable
 
 3. Citations (VERY IMPORTANT)
-   - After EVERY key statement, add a citation in square brackets: [1], [2], [3], etc.
+   - You have access to exactly {num_sources} sources numbered [1] to [{num_sources}]
+   - ONLY use citation numbers from [1] to [{num_sources}]
+   - After key statements, add inline citations: [1], [2], [3], etc.
    - Citations are inline and numbered sequentially
    - Only cite the statement immediately before the citation
    - Do not group all citations at the end
    - Example: "The candidate has strong academic background [1] with hands-on experience [2]"
-   - Repeat citation numbers if referencing the same source multiple times
+   - You can repeat citation numbers if referencing the same source multiple times
+   - NEVER use citation numbers higher than {num_sources}
 
 4. Style
    - Professional and clear
@@ -457,7 +466,7 @@ RULES:
    - Well-structured with sections
    - Easy to scan and read
 
-Output clean, well-formatted markdown with inline citations that will be rendered as clickable numbers."""
+Output clean, well-formatted markdown with inline citations [1] to [{num_sources}] that will be rendered as clickable numbers."""
     
     user_prompt = f"""Context Documents:
 {context}
@@ -476,7 +485,7 @@ Answer:"""
         
         # Generate answer
         response = client.chat.completions.create(
-            model=os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-4o-mini'),
+            model=os.environ.get('AZURE_OPENAI_DEPLOYMENT', 'gpt-5.2-chat'),
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": user_prompt}
@@ -519,9 +528,9 @@ async def upload_document(file: UploadFile = File(...)):
     return doc
 
 @api_router.get("/documents", response_model=List[Document])
-async def get_documents():
-    """Get all uploaded documents"""
-    docs = await db.documents.find({}, {"_id": 0}).to_list(1000)
+async def get_documents(skip: int = 0, limit: int = 100):
+    """Get all uploaded documents with pagination"""
+    docs = await db.documents.find({}, {"_id": 0}).skip(skip).limit(limit).to_list(None)
     for doc in docs:
         if isinstance(doc.get('upload_date'), str):
             doc['upload_date'] = datetime.fromisoformat(doc['upload_date'])
@@ -530,17 +539,20 @@ async def get_documents():
 @api_router.delete("/documents/{document_id}")
 async def delete_document(document_id: str):
     """Delete a document and its chunks"""
-    global chunk_metadata
+    global chunk_metadata, metadata_index_map
     
     # Delete from database
     await db.documents.delete_one({'id': document_id})
     await db.document_chunks.delete_many({'document_id': document_id})
     
-    # Remove from metadata
-    chunk_metadata = [c for c in chunk_metadata if c['document_id'] != document_id]
+    # Remove from metadata - filter dict keys
+    chunk_ids_to_remove = [cid for cid, meta in chunk_metadata.items() 
+                          if meta['document_id'] == document_id]
+    for chunk_id in chunk_ids_to_remove:
+        del chunk_metadata[chunk_id]
     
-    # Note: FAISS index rebuild would be needed for production
-    # For MVP, we keep the index as is (minor inefficiency)
+    # Update metadata_index_map
+    metadata_index_map = [cid for cid in metadata_index_map if cid not in chunk_ids_to_remove]
     
     return {"message": "Document deleted"}
 
@@ -612,12 +624,12 @@ async def query_documents(request: QueryRequest):
     )
 
 @api_router.get("/documents/{document_id}/chunks")
-async def get_document_chunks(document_id: str):
-    """Get all chunks for a document"""
+async def get_document_chunks(document_id: str, skip: int = 0, limit: int = 100):
+    """Get all chunks for a document with pagination"""
     chunks = await db.document_chunks.find(
         {'document_id': document_id},
         {'_id': 0, 'embedding': 0}  # Exclude embeddings
-    ).to_list(1000)
+    ).skip(skip).limit(limit).to_list(None)
     return chunks
 
 # Chat Routes
