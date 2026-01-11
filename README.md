@@ -163,7 +163,7 @@ Application will be available at `http://localhost:3000`
 ```env
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your_32_character_key
-AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5p2-preview
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5.2-preview
 MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/
 ```
 
@@ -217,7 +217,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- Azure OpenAI for GPT-4 integration
+- Azure OpenAI for GPT-5.2 integration
 - FAISS library for efficient vector search
 - Sentence Transformers for embedding generation
 - MongoDB Atlas for cloud database hosting
