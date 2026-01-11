@@ -31,7 +31,7 @@ NeuroQuery is a production-grade Retrieval-Augmented Generation (RAG) system tha
 
 ### Backend
 - **Framework:** FastAPI + Uvicorn
-- **LLM:** Azure OpenAI (GPT-4)
+- **LLM:** Azure OpenAI (GPT-5.2 Preview)
 - **Vector Search:** FAISS (FlatL2 indexing)
 - **Embeddings:** Sentence Transformers (all-MiniLM-L6-v2)
 - **Database:** MongoDB Atlas (Motor async driver)
@@ -163,7 +163,7 @@ Application will be available at `http://localhost:3000`
 ```env
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your_32_character_key
-AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4-deployment
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5p2-preview
 MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/
 ```
 
