@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Loader2, Send, Plus, Trash2, Menu, Copy, Check, Upload, X, Moon, Sun } from 'lucide-react';
+import { Loader2, Send, Plus, Trash2, Menu, Copy, Check, Upload, X, Moon, Sun, Home } from 'lucide-react';
 import axios from 'axios';
 import ChatMessageRenderer from '../components/ChatMessageRenderer';
 
 const Chat = () => {
+  const navigate = useNavigate();
   const [chats, setChats] = useState([]);
   const [currentChat, setCurrentChat] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -135,9 +137,12 @@ const Chat = () => {
       
       setMessages(prev => [...prev, assistantMessage]);
 
-      // Reload chat to get updated data
+      // Reload chat to get updated data and refresh sidebar
       const chatResponse = await axios.get(`${API_BASE}/api/chats/${currentChat.id}`);
       setCurrentChat(chatResponse.data);
+      
+      // Reload chats list to update sidebar with new title
+      await loadChats();
     } catch (error) {
       console.error('Error sending message:', error);
       const errorMessage = {
@@ -269,6 +274,13 @@ const Chat = () => {
       {/* Sidebar */}
       <div className={`${showSidebar ? 'w-64' : 'w-0'} ${isDarkMode ? 'bg-gradient-to-b from-slate-950 to-slate-900' : 'bg-gradient-to-b from-slate-900 to-slate-800'} text-white transition-all duration-300 overflow-hidden flex flex-col shadow-lg`}>
         <div className={`p-4 border-b ${isDarkMode ? 'border-slate-700' : 'border-slate-700'}`}>
+          <Button
+            onClick={() => navigate('/')}
+            className="w-full mb-3 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-lg"
+          >
+            <Home className="w-4 h-4 mr-2" />
+            Back to Home
+          </Button>
           <Button
             onClick={handleNewChat}
             className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-medium rounded-lg"

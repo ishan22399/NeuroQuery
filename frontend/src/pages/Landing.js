@@ -166,7 +166,7 @@ const Landing = () => {
           </p>
           <button
             data-testid="cta-launch-btn"
-            onClick={() => navigate('/app')}
+            onClick={() => navigate('/chat')}
             className="px-8 py-4 bg-white text-primary rounded-md font-medium text-lg hover:bg-white/90 transition-all shadow-lg active:scale-95"
           >
             Launch NeuroQuery
