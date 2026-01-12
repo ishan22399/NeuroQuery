@@ -101,7 +101,9 @@ async def rebuild_faiss_index():
                 'document_id': e['document_id'],
                 'document_name': e['document_name'],
                 'chunk_index': e['chunk_index'],
-                'text': e['text']
+                'text': e['text'],
+                'page_number': chunk.get('page_number'),
+                'section_title': chunk.get('section_title')
             }
             metadata_index_map.append(chunk_id)
         
@@ -127,6 +129,8 @@ class DocumentChunk(BaseModel):
     chunk_index: int
     text: str
     embedding: Optional[List[float]] = None
+    page_number: Optional[int] = None  # Track page for PDFs
+    section_title: Optional[str] = None  # Track section headers
 
 class QueryRequest(BaseModel):
     query: str
@@ -139,6 +143,10 @@ class Citation(BaseModel):
     document_name: str
     text: str
     similarity: float
+    page_number: Optional[int] = None  # Page where citation appears
+    section: Optional[str] = None  # Section title if available
+    quality_score: Optional[float] = None  # 0-1, confidence in citation relevance
+    confidence_level: Optional[str] = None  # 'high', 'medium', 'low'
 
 class QueryResponse(BaseModel):
     answer: str
@@ -161,6 +169,21 @@ class ChatSession(BaseModel):
     document_ids: Optional[List[str]] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class MessageFeedback(BaseModel):
+    """User feedback on AI responses"""
+    message_id: str
+    chat_id: str
+    helpful: bool  # True for upvote, False for downvote
+    feedback_text: Optional[str] = None  # Optional user comment
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SearchQuery(BaseModel):
+    """Store search history"""
+    query: str
+    document_ids: Optional[List[str]] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    result_count: int = 0
 
 # Helper functions
 def extract_text_from_pdf(file_bytes: bytes) -> str:
@@ -324,11 +347,21 @@ async def process_document(file: UploadFile, document_id: str):
     # Batch insert chunks into database
     chunk_docs = []
     for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        # Extract page number if present in chunk
+        page_number = None
+        if "--- Page " in chunk:
+            import re
+            page_match = re.search(r'--- Page (\d+) ---', chunk)
+            if page_match:
+                page_number = int(page_match.group(1))
+        
         chunk_doc = DocumentChunk(
             document_id=document_id,
             chunk_index=idx,
             text=chunk,
-            embedding=embedding.tolist()
+            embedding=embedding.tolist(),
+            page_number=page_number,
+            section_title=None
         )
         chunk_dict = chunk_doc.model_dump()
         chunk_dict['upload_date'] = datetime.now(timezone.utc).isoformat()
@@ -382,13 +415,20 @@ async def retrieve_relevant_chunks(query: str, top_k: int = 5, document_ids: Opt
                 continue
             
             similarity = 1.0 / (1.0 + distance)  # Convert distance to similarity
+            
+            # Calculate quality score (0-1)
+            quality_score = min(similarity * (1.0 if len(meta['text']) > 100 else 0.8), 1.0)
+            
             results.append({
                 'chunk_id': chunk_id,
                 'document_id': meta['document_id'],
                 'document_name': meta['document_name'],
                 'text': meta['text'],
                 'similarity': float(similarity),
-                'distance': float(distance)
+                'distance': float(distance),
+                'page_number': meta.get('page_number'),
+                'section_title': meta.get('section_title'),
+                'quality_score': float(quality_score)
             })
     
     # Sort by similarity and return top_k
@@ -532,14 +572,107 @@ async def upload_document(file: UploadFile = File(...)):
     
     return doc
 
+@api_router.post("/documents/preview")
+async def preview_document(file: UploadFile = File(...)):
+    """Preview document content before uploading"""
+    try:
+        file_bytes = await file.read()
+        file_type = file.filename.split('.')[-1].lower()
+        
+        # Extract text based on file type
+        text = ""
+        if file_type == 'pdf':
+            text = extract_text_from_pdf(file_bytes)
+        elif file_type in ['docx', 'doc']:
+            text = extract_text_from_docx(file_bytes)
+        elif file_type in ['txt', 'md']:
+            text = file_bytes.decode('utf-8')
+        elif file_type in ['png', 'jpg', 'jpeg', 'bmp', 'gif']:
+            text = extract_text_from_image(file_bytes)
+        else:
+            return {
+                "filename": file.filename,
+                "file_type": file_type,
+                "preview": "[Unsupported file type]",
+                "total_length": 0
+            }
+        
+        # Return first 500 characters as preview
+        preview_text = text[:500] if text else "[No content extracted]"
+        
+        return {
+            "filename": file.filename,
+            "file_type": file_type,
+            "preview": preview_text,
+            "total_length": len(text),
+            "is_complete": len(text) <= 500
+        }
+    except Exception as e:
+        logging.error(f"Error previewing document: {e}")
+        raise HTTPException(status_code=400, detail=f"Error previewing file: {str(e)}")
+
 @api_router.get("/documents", response_model=List[Document])
-async def get_documents(skip: int = 0, limit: int = 100):
-    """Get all uploaded documents with pagination"""
-    docs = await db.documents.find({}, {"_id": 0}).skip(skip).limit(limit).to_list(None)
+async def get_documents(skip: int = 0, limit: int = 100, file_type: str = None, search: str = None):
+    """Get all uploaded documents with pagination and filtering
+    
+    Query parameters:
+    - skip: Number of documents to skip (default: 0)
+    - limit: Max documents to return (default: 100)
+    - file_type: Filter by file type (pdf, docx, txt, image, etc.)
+    - search: Search by document name (case-insensitive substring match)
+    """
+    query = {}
+    
+    # Filter by file type if provided
+    if file_type and file_type.strip():
+        query['file_type'] = file_type.lower()
+    
+    # Filter by search term in filename if provided
+    if search and search.strip():
+        query['filename'] = {'$regex': search, '$options': 'i'}  # Case-insensitive regex match
+    
+    docs = await db.documents.find(query, {"_id": 0}).skip(skip).limit(limit).to_list(None)
     for doc in docs:
         if isinstance(doc.get('upload_date'), str):
             doc['upload_date'] = datetime.fromisoformat(doc['upload_date'])
     return docs
+
+@api_router.get("/documents/stats/overview")
+async def get_documents_stats():
+    """Get document statistics (count, types, etc.)"""
+    total_count = await db.documents.count_documents({})
+    
+    # Get count by file type
+    type_stats = await db.documents.aggregate([
+        {
+            '$group': {
+                '_id': '$file_type',
+                'count': {'$sum': 1}
+            }
+        },
+        {'$sort': {'count': -1}}
+    ]).to_list(None)
+    
+    # Get recent uploads (last 5)
+    recent = await db.documents.find({}, {'_id': 0, 'filename': 1, 'file_type': 1, 'upload_date': 1}).sort('upload_date', -1).limit(5).to_list(None)
+    
+    # Calculate total size from all chunks
+    chunk_stats = await db.document_chunks.aggregate([
+        {
+            '$group': {
+                '_id': None,
+                'total_chunks': {'$sum': 1},
+                'avg_chunk_length': {'$avg': {'$strLenCP': '$text'}}
+            }
+        }
+    ]).to_list(1)
+    
+    return {
+        'total_documents': total_count,
+        'documents_by_type': [{'type': stat['_id'], 'count': stat['count']} for stat in type_stats],
+        'recent_uploads': recent,
+        'chunk_statistics': chunk_stats[0] if chunk_stats else {'total_chunks': 0, 'avg_chunk_length': 0}
+    }
 
 @api_router.delete("/documents/{document_id}")
 async def delete_document(document_id: str):
@@ -590,14 +723,18 @@ async def query_documents(request: QueryRequest):
     # Check if LLM refused to answer
     refused = "cannot answer" in answer.lower() or "don't have" in answer.lower()
     
-    # Create citations
+    # Create citations with page numbers and quality scores
     citations = [
         Citation(
             chunk_id=chunk['chunk_id'],
             document_id=chunk['document_id'],
             document_name=chunk['document_name'],
             text=chunk['text'][:300] + "..." if len(chunk['text']) > 300 else chunk['text'],
-            similarity=chunk['similarity']
+            similarity=chunk['similarity'],
+            page_number=chunk.get('page_number'),
+            section=chunk.get('section_title'),
+            quality_score=chunk.get('quality_score'),
+            confidence_level='high' if chunk.get('quality_score', 0) > 0.8 else 'medium' if chunk.get('quality_score', 0) > 0.5 else 'low'
         )
         for chunk in chunks
     ]
@@ -691,14 +828,18 @@ async def send_message(chat_id: str, message: str, mode: str = "detailed"):
         # Generate answer
         answer = await generate_answer_with_llm(message, chunks, mode)
         
-        # Create citations
+        # Create citations with page numbers and quality scores
         citations = [
             {
                 "chunk_id": chunk['chunk_id'],
                 "document_id": chunk['document_id'],
                 "document_name": chunk['document_name'],
                 "text": chunk['text'][:300] + "..." if len(chunk['text']) > 300 else chunk['text'],
-                "similarity": chunk['similarity']
+                "similarity": chunk['similarity'],
+                "page_number": chunk.get('page_number'),
+                "section": chunk.get('section_title'),
+                "quality_score": chunk.get('quality_score'),
+                "confidence_level": 'high' if chunk.get('quality_score', 0) > 0.8 else 'medium' if chunk.get('quality_score', 0) > 0.5 else 'low'
             }
             for chunk in chunks
         ]
@@ -727,6 +868,20 @@ async def send_message(chat_id: str, message: str, mode: str = "detailed"):
         }}
     )
     
+    # Log search query to history (async, non-blocking)
+    try:
+        search_log = {
+            "query": message,
+            "document_ids": document_ids or [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "result_count": len(chunks),
+            "helpful": None  # Will be updated when user provides feedback
+        }
+        await db.search_queries.insert_one(search_log)
+    except Exception as e:
+        logging.warning(f"Failed to log search query: {e}")  # Non-critical
+    
+    
     return {
         "user_message": user_msg,
         "assistant_message": assistant_msg,
@@ -744,6 +899,68 @@ async def delete_chat(chat_id: str):
     """Delete a chat session"""
     await db.chat_sessions.delete_one({'id': chat_id})
     return {"message": "Chat deleted"}
+
+# Feedback Routes
+@api_router.post("/feedback")
+async def submit_feedback(message_id: str, chat_id: str, helpful: bool, feedback_text: Optional[str] = None):
+    """Submit feedback on an AI response"""
+    try:
+        feedback = {
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "helpful": helpful,
+            "feedback_text": feedback_text,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Store feedback
+        await db.message_feedback.insert_one(feedback)
+        
+        # Also update the message in chat with feedback flag
+        await db.chat_sessions.update_one(
+            {"id": chat_id, "messages.id": message_id},
+            {"$set": {"messages.$.feedback_helpful": helpful}}
+        )
+        
+        return {"status": "feedback received"}
+    except Exception as e:
+        logging.error(f"Error storing feedback: {e}")
+        raise HTTPException(status_code=500, detail="Error storing feedback")
+
+@api_router.get("/feedback/{chat_id}")
+async def get_feedback(chat_id: str):
+    """Get all feedback for a chat"""
+    feedbacks = await db.message_feedback.find(
+        {"chat_id": chat_id},
+        {"_id": 0}
+    ).to_list(100)
+    return feedbacks
+
+@api_router.get("/search-history")
+async def get_search_history(limit: int = 20):
+    """Get recent search history"""
+    history = await db.search_queries.find(
+        {},
+        {"_id": 0}
+    ).sort("timestamp", -1).limit(limit).to_list(None)
+    return history
+
+@api_router.post("/search-history")
+async def log_search_query(query: str, document_ids: Optional[List[str]] = None, result_count: int = 0):
+    """Log a search query"""
+    try:
+        search_log = {
+            "query": query,
+            "document_ids": document_ids or [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "result_count": result_count
+        }
+        await db.search_queries.insert_one(search_log)
+        return {"status": "logged"}
+    except Exception as e:
+        logging.error(f"Error logging search: {e}")
+        # Don't fail if logging fails
+        return {"status": "logged", "warning": "logging failed"}
 
 # Include the router in the main app
 app.include_router(api_router)
