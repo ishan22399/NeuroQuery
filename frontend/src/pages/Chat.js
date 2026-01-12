@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Loader2, Send, Plus, Trash2, Menu, Copy, Check, Upload, X, Moon, Sun, Home } from 'lucide-react';
+import { Loader2, Send, Plus, Trash2, Menu, Copy, Check, Upload, X, Moon, Sun, Home, ThumbsUp, ThumbsDown } from 'lucide-react';
 import axios from 'axios';
 import ChatMessageRenderer from '../components/ChatMessageRenderer';
 
@@ -21,6 +21,10 @@ const Chat = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState({});
   const [isDragging, setIsDragging] = useState(false);
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [showSearchHistory, setShowSearchHistory] = useState(false);
+  const [previewModal, setPreviewModal] = useState(null);
+  const [comparisonModal, setComparisonModal] = useState(null);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('chat-dark-mode');
     return saved ? JSON.parse(saved) : false;
@@ -51,6 +55,19 @@ const Chat = () => {
       }
     };
     loadDocuments();
+  }, []);
+
+  // Load search history
+  useEffect(() => {
+    const loadSearchHistory = async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/api/search-history?limit=10`);
+        setSearchHistory(response.data);
+      } catch (error) {
+        console.error('Error loading search history:', error);
+      }
+    };
+    loadSearchHistory();
   }, []);
 
   // Load chats
@@ -157,6 +174,136 @@ const Chat = () => {
     }
   };
 
+  // Regenerate last answer
+  const handleRegenerateAnswer = async () => {
+    if (!currentChat || messages.length < 2) return;
+    
+    // Find the last user message
+    let lastUserMessage = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        lastUserMessage = messages[i];
+        break;
+      }
+    }
+    
+    if (!lastUserMessage) return;
+    
+    setLoading(true);
+    try {
+      const response = await axios.post(
+        `${API_BASE}/api/chats/${currentChat.id}/messages`,
+        null,
+        { params: { message: lastUserMessage.content, mode: 'detailed' } }
+      );
+
+      const newAssistantMessage = {
+        role: 'assistant',
+        content: response.data.assistant_message?.content || response.data.answer,
+        citations: response.data.citations || response.data.assistant_message?.citations,
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString()
+      };
+      
+      // Replace last assistant message with regenerated one
+      setMessages(prev => {
+        const newMessages = [...prev];
+        // Find and replace last assistant message
+        for (let i = newMessages.length - 1; i >= 0; i--) {
+          if (newMessages[i].role === 'assistant') {
+            newMessages[i] = newAssistantMessage;
+            break;
+          }
+        }
+        return newMessages;
+      });
+
+      // Reload chat data
+      const chatResponse = await axios.get(`${API_BASE}/api/chats/${currentChat.id}`);
+      setCurrentChat(chatResponse.data);
+    } catch (error) {
+      console.error('Error regenerating answer:', error);
+      alert('Failed to regenerate answer. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Submit feedback on answer
+  const handleSubmitFeedback = async (messageId, helpful) => {
+    try {
+      await axios.post(
+        `${API_BASE}/api/feedback`,
+        null,
+        { 
+          params: { 
+            message_id: messageId, 
+            chat_id: currentChat.id, 
+            helpful: helpful 
+          } 
+        }
+      );
+      
+      // Update message with feedback flag
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId 
+          ? { ...msg, feedback_helpful: helpful }
+          : msg
+      ));
+    } catch (error) {
+      console.error('Error submitting feedback:', error);
+    }
+  };
+
+  // Preview document before upload
+  const handlePreviewFile = async (file) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await axios.post(`${API_BASE}/api/documents/preview`, formData);
+      setPreviewModal({
+        file: file,
+        preview: response.data,
+        showModal: true
+      });
+    } catch (error) {
+      console.error('Error previewing document:', error);
+      alert('Error previewing document: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  // Confirm upload after preview
+  const handleConfirmUpload = async () => {
+    if (!previewModal?.file) return;
+    
+    const formData = new FormData();
+    formData.append('file', previewModal.file);
+    
+    try {
+      setUploading(true);
+      await axios.post(`${API_BASE}/api/documents/upload`, formData);
+      setPreviewModal(null);
+      await loadDocuments();
+    } catch (error) {
+      console.error('Error uploading document:', error);
+      alert('Error uploading document: ' + (error.response?.data?.detail || error.message));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Compare multiple citations
+  const handleCompareCitations = (citations) => {
+    if (citations && citations.length > 0) {
+      setComparisonModal({
+        citations: citations,
+        showModal: true,
+        selectedIndex: 0
+      });
+    }
+  };
+
   // Delete chat
   const handleDeleteChat = async (chatId, e) => {
     e.stopPropagation();
@@ -190,7 +337,16 @@ const Chat = () => {
   const handleFileUpload = async (event) => {
     const files = Array.from(event.target.files);
     if (files.length === 0) return;
-    uploadFiles(files);
+    
+    // Show preview for first file
+    if (files.length > 0) {
+      handlePreviewFile(files[0]);
+    }
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const removeDocument = async (docId) => {
@@ -481,7 +637,46 @@ const Chat = () => {
                               setCitationModal({ idx: num - 1, cite: citation });
                             }
                           }}
+                          onCompare={() => handleCompareCitations(msg.citations)}
                         />
+
+                        {/* Regenerate Answer Button + Feedback */}
+                        <div className="mt-3 flex items-center gap-2">
+                          {messages[messages.length - 1] === msg && !loading && (
+                            <button
+                              onClick={handleRegenerateAnswer}
+                              className={`text-sm px-3 py-1 rounded-md transition-colors ${isDarkMode ? 'text-blue-400 hover:bg-gray-800' : 'text-blue-600 hover:bg-blue-50'}`}
+                            >
+                              ↻ Regenerate
+                            </button>
+                          )}
+                          
+                          {/* Feedback Buttons */}
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => handleSubmitFeedback(msg.id, true)}
+                              className={`p-1.5 rounded transition-colors ${
+                                msg.feedback_helpful === true
+                                  ? (isDarkMode ? 'bg-green-900 text-green-300' : 'bg-green-100 text-green-700')
+                                  : (isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-400 hover:bg-gray-100')
+                              }`}
+                              title="This was helpful"
+                            >
+                              <ThumbsUp className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleSubmitFeedback(msg.id, false)}
+                              className={`p-1.5 rounded transition-colors ${
+                                msg.feedback_helpful === false
+                                  ? (isDarkMode ? 'bg-red-900 text-red-300' : 'bg-red-100 text-red-700')
+                                  : (isDarkMode ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-400 hover:bg-gray-100')
+                              }`}
+                              title="This wasn't helpful"
+                            >
+                              <ThumbsDown className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
 
                         {msg.citations && msg.citations.length > 0 && (
                           <div className={`mt-6 pt-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-slate-200'}`}>
@@ -695,6 +890,265 @@ const Chat = () => {
                   <p className={`leading-relaxed whitespace-pre-wrap ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
                     {citationModal.cite.text}
                   </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Document Preview Modal */}
+        {previewModal?.showModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto`}>
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Preview Document
+                  </h2>
+                  <button
+                    onClick={() => setPreviewModal(null)}
+                    className={`p-1 hover:bg-gray-200 rounded ${isDarkMode ? 'hover:bg-gray-700' : ''}`}
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className={`bg-gray-50 p-4 rounded-lg mb-4 ${isDarkMode ? 'bg-gray-700' : ''}`}>
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                        FILENAME
+                      </p>
+                      <p className={`text-sm break-all ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                        {previewModal.file.name}
+                      </p>
+                    </div>
+                    <div>
+                      <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                        FILE TYPE
+                      </p>
+                      <p className={`text-sm uppercase ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                        {previewModal.preview.file_type}
+                      </p>
+                    </div>
+                    <div>
+                      <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                        SIZE
+                      </p>
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                        {(previewModal.file.size / 1024).toFixed(2)} KB
+                      </p>
+                    </div>
+                    <div>
+                      <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                        CHARACTERS
+                      </p>
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                        {previewModal.preview.total_length}
+                      </p>
+                    </div>
+                  </div>
+                  {!previewModal.preview.is_complete && (
+                    <div className="text-xs text-blue-600 bg-blue-50 p-2 rounded">
+                      Preview shows first {previewModal.preview.preview.length} characters
+                    </div>
+                  )}
+                </div>
+
+                <div className={`border rounded-lg p-4 mb-4 max-h-[300px] overflow-y-auto ${isDarkMode ? 'border-gray-600 bg-gray-900' : 'border-slate-200 bg-slate-50'}`}>
+                  <p className={`text-sm leading-relaxed whitespace-pre-wrap ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
+                    {previewModal.preview.preview}
+                  </p>
+                  {!previewModal.preview.is_complete && (
+                    <p className={`text-xs mt-2 ${isDarkMode ? 'text-gray-500' : 'text-slate-500'}`}>
+                      ... (document continues)
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setPreviewModal(null)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      isDarkMode
+                        ? 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+                        : 'bg-slate-200 text-slate-900 hover:bg-slate-300'
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmUpload}
+                    disabled={uploading}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Uploading...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" />
+                        Upload Document
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Citation Comparison Modal */}
+        {comparisonModal?.showModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-xl max-w-4xl w-full max-h-[80vh] overflow-y-auto`}>
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Compare Citations ({comparisonModal.citations.length})
+                  </h2>
+                  <button
+                    onClick={() => setComparisonModal(null)}
+                    className={`p-1 hover:bg-gray-200 rounded ${isDarkMode ? 'hover:bg-gray-700' : ''}`}
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Citation Navigation */}
+                <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+                  {comparisonModal.citations.map((cite, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setComparisonModal(prev => ({ ...prev, selectedIndex: idx }))}
+                      className={`px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap transition-colors ${
+                        comparisonModal.selectedIndex === idx
+                          ? 'bg-blue-600 text-white'
+                          : isDarkMode
+                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                          : 'bg-slate-200 text-slate-900 hover:bg-slate-300'
+                      }`}
+                    >
+                      Citation {idx + 1}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Citation Details */}
+                {comparisonModal.citations[comparisonModal.selectedIndex] && (
+                  <div className={`border rounded-lg p-4 mb-4 ${isDarkMode ? 'border-gray-600' : 'border-slate-200'}`}>
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div>
+                        <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                          SOURCE DOCUMENT
+                        </p>
+                        <p className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                          {comparisonModal.citations[comparisonModal.selectedIndex].document}
+                        </p>
+                      </div>
+                      <div>
+                        <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                          RELEVANCE SCORE
+                        </p>
+                        <p className={`text-sm font-semibold ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                          {(comparisonModal.citations[comparisonModal.selectedIndex].similarity * 100).toFixed(1)}%
+                        </p>
+                      </div>
+                      {comparisonModal.citations[comparisonModal.selectedIndex].page_number && (
+                        <div>
+                          <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                            PAGE NUMBER
+                          </p>
+                          <p className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-slate-900'}`}>
+                            {comparisonModal.citations[comparisonModal.selectedIndex].page_number}
+                          </p>
+                        </div>
+                      )}
+                      {comparisonModal.citations[comparisonModal.selectedIndex].confidence_level && (
+                        <div>
+                          <p className={`text-xs font-semibold mb-1 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                            CONFIDENCE
+                          </p>
+                          <p className={`text-sm capitalize ${
+                            comparisonModal.citations[comparisonModal.selectedIndex].confidence_level === 'high'
+                              ? 'text-green-600'
+                              : comparisonModal.citations[comparisonModal.selectedIndex].confidence_level === 'medium'
+                              ? 'text-yellow-600'
+                              : 'text-orange-600'
+                          }`}>
+                            {comparisonModal.citations[comparisonModal.selectedIndex].confidence_level}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div className={`bg-gray-50 p-4 rounded ${isDarkMode ? 'bg-gray-900' : ''}`}>
+                      <p className={`text-sm leading-relaxed whitespace-pre-wrap ${isDarkMode ? 'text-gray-300' : 'text-slate-700'}`}>
+                        {comparisonModal.citations[comparisonModal.selectedIndex].text}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Comparison Summary */}
+                <div className={`border-t pt-4 ${isDarkMode ? 'border-gray-700' : 'border-slate-200'}`}>
+                  <p className={`text-xs font-semibold mb-3 ${isDarkMode ? 'text-gray-400' : 'text-slate-600'}`}>
+                    QUICK COMPARISON
+                  </p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {comparisonModal.citations.map((cite, idx) => (
+                      <div
+                        key={idx}
+                        className={`text-xs p-2 rounded flex items-center justify-between ${
+                          comparisonModal.selectedIndex === idx
+                            ? isDarkMode
+                              ? 'bg-blue-900 text-blue-200'
+                              : 'bg-blue-100 text-blue-900'
+                            : isDarkMode
+                            ? 'bg-gray-700 text-gray-300'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <span>Citation {idx + 1}: {cite.document}</span>
+                        <span className="font-semibold">{(cite.similarity * 100).toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3 justify-end mt-4">
+                  <button
+                    onClick={() => {
+                      copyToClipboard(
+                        comparisonModal.citations.map((c, i) => `Citation ${i + 1}:\n${c.text}`).join('\n\n'),
+                        'comparison-copy'
+                      );
+                    }}
+                    className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors font-medium flex items-center gap-2"
+                  >
+                    {copiedId === 'comparison-copy' ? (
+                      <>
+                        <Check className="w-4 h-4" />
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        Copy All
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setComparisonModal(null)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      isDarkMode
+                        ? 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+                        : 'bg-slate-200 text-slate-900 hover:bg-slate-300'
+                    }`}
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
             </div>
