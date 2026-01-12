@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle, Info, Eye } from 'lucide-react';
 import CitationBadge from './CitationBadge';
 import FaithfulnessIndicator from './FaithfulnessIndicator';
 
-const AnswerDisplay = ({ result }) => {
+const AnswerDisplay = ({ result, onCompareCitations }) => {
   const [activeCitation, setActiveCitation] = useState(null);
 
   if (!result) return null;
@@ -24,6 +24,7 @@ const AnswerDisplay = ({ result }) => {
             citation={citation}
             active={activeCitation === citationNum}
             onClick={() => setActiveCitation(activeCitation === citationNum ? null : citationNum)}
+            onCompare={() => onCompareCitations && onCompareCitations(result.citations)}
           />
         ) : `[${part}]`;
       }
